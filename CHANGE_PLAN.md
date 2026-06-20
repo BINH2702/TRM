@@ -1132,7 +1132,141 @@ Next steps after the joint rerun finishes:
    different maze-generation regime, or train on long-path first then
    fine-tune on short-path to test shallow-solver interference.
 
-## 17. Notes
+## 17. Maze Solved-Depth Sentinel
+
+### 2026-06-20: A-Teacher and Sequential Horizon Probes
+
+Motivation:
+
+```text
+The plain Maze path-length split produced positive transfer, not forgetting.
+The next proposed direction was to select examples by TRM solving depth rather
+than raw path length, then test a deep-solver -> fast-shallow adaptation.
+```
+
+Implemented:
+
+```text
+scripts/eval_maze_solved_depth.py
+```
+
+The script evaluates a checkpoint at multiple TRM inference horizons and writes:
+
+```text
+solved_depth_per_example.csv
+solved_depth_summary.csv
+```
+
+Metrics:
+
+```text
+exact accuracy
+token accuracy
+path-token F1
+incorrect cell count
+path length
+per-example solved bucket
+```
+
+Run directories:
+
+```text
+A-only teacher:
+/mnt/data/binhnt6/trm_runs/results/maze_cl_gate_pathlen_20260620_015643/solved_depth_a_teacher
+
+Sequential checkpoint:
+/mnt/data/binhnt6/trm_runs/results/maze_cl_gate_pathlen_20260620_015643/solved_depth_sequential_b
+```
+
+The first sentinel job failed because Maze labels are stored as `uint8` and the
+script tried to write `-100` ignore labels before casting to `int32`. This was
+fixed in the script, and the reruns completed.
+
+### A-Only Teacher Horizon Result
+
+| Eval split | K=4 exact | K=8 exact | K=16 exact | K=32 exact | K=16 path F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Task A | 0.285 | 0.295 | 0.290 | 0.280 | 0.903 |
+| Task B | 0.275 | 0.290 | 0.295 | 0.290 | 0.901 |
+
+Solved-depth buckets:
+
+| Eval split | solved@4 | solved@8 | solved@16 | solved@32 | unsolved@32 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Task A | 57 | 6 | 0 | 0 | 137 |
+| Task B | 55 | 4 | 1 | 0 | 140 |
+
+Reading:
+
+```text
+The A-only teacher does not have a useful late-solved population.
+Most solved examples are already solved at K=4, and most unsolved examples
+remain unsolved at K=32.
+```
+
+So the current A-only checkpoint is not suitable for selecting:
+
+```text
+deep examples = unsolved at K=4/8 but solved at K=16/32
+```
+
+### Sequential Checkpoint Horizon Result
+
+| Eval split | K=4 exact | K=8 exact | K=16 exact | K=32 exact | K=16 path F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Task A | 0.495 | 0.495 | 0.480 | 0.490 | 0.934 |
+| Task B | 0.590 | 0.600 | 0.585 | 0.605 | 0.945 |
+
+Solved-depth buckets:
+
+| Eval split | solved@4 | solved@8 | solved@16 | solved@32 | unsolved@32 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Task A | 99 | 7 | 2 | 2 | 90 |
+| Task B | 118 | 8 | 2 | 1 | 71 |
+
+Reading:
+
+```text
+The stronger sequential checkpoint also does not show a meaningful late-solved
+depth axis. Extra inference from K=4 to K=16/K=32 changes exact accuracy only
+slightly.
+```
+
+Current conclusion:
+
+```text
+The next TRM process-forgetting run should not be launched yet.
+The current Maze checkpoints do not expose the desired deep-vs-fast-shallow
+structure.
+```
+
+The most likely issue is that the current training setup is not close enough to
+the strong Maze regime in the TRM paper:
+
+```text
+current run:
+  no augmentation
+  2500 epochs per phase
+  ema=False
+  L_cycles=6
+
+README/paper-style Maze:
+  maze-30x30-hard-1k with 8 augmentations
+  50000 epochs
+  ema=True
+  H_cycles=3, L_cycles=4
+```
+
+Recommended next step:
+
+```text
+Train or obtain a stronger Maze teacher first, closer to the paper recipe.
+Then rerun solved-depth evaluation at K=4,8,16,32.
+Only if there are enough examples solved late should we build the
+Deep@16 -> FastShallow@4/8 CL gate.
+```
+
+## 18. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
