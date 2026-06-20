@@ -60,14 +60,42 @@ Task B checkpoint on Task A test
 Task B checkpoint on Task B test
 ```
 
-4. Prepared local datasets under `/mnt/data/binhnt6/trm_data`:
+4. Added a four-run learnability-gate evaluator and runner:
+
+```text
+scripts/eval_cl_learnability_gate.py
+scripts/run_single_dataset_cl_learnability_gate.sh
+```
+
+It runs and evaluates:
+
+```text
+A-only
+B-only
+joint A+B
+sequential A -> B
+```
+
+5. Added a Maze path-length CL gate wrapper:
+
+```text
+scripts/run_maze_cl_gate.sh
+```
+
+It splits Maze by old solution-path length and can be launched later with:
+
+```bash
+sbatch scripts/run_maze_cl_gate.sh
+```
+
+6. Prepared local datasets under `/mnt/data/binhnt6/trm_data`:
 
 ```text
 /mnt/data/binhnt6/trm_data/sudoku-extreme-1k-noaug
 /mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug
 ```
 
-5. Ran four TRM-native Sudoku CL experiments:
+7. Ran four TRM-native Sudoku CL experiments:
 
 ```text
 sudoku_cl_smoke_20260619_035939
@@ -429,6 +457,7 @@ and the Task B finetuned checkpoint on old Task A examples.
 | 2026-06-19 | `CHANGE_PLAN.md`, `scripts/eval_cl_endpoint_matrix.py` | Added endpoint-matrix evaluator and recorded the longer Sudoku CL run. | Slurm MIG run `sudoku_cl_real_20260619_040846`; standalone endpoint evaluation wrote `/mnt/data/binhnt6/trm_runs/results/sudoku_cl_real_20260619_040846_endpoint_matrix.csv`. |
 | 2026-06-19 | `CHANGE_PLAN.md`, `dataset/split_cl_dataset.py`, `scripts/run_single_dataset_cl_finetune.sh` | Added Sudoku blank-count split support and recorded the harder easy-to-hard Sudoku CL run. | `python3 -m py_compile dataset/split_cl_dataset.py scripts/eval_cl_endpoint_matrix.py`; `bash -n scripts/run_single_dataset_cl_finetune.sh`; Slurm MIG run `sudoku_cl_hard_blanks_20260619_063039`. |
 | 2026-06-20 | `CHANGE_PLAN.md` | Recorded the one-GPU Sudoku learnability gate with A-only, B-only, joint, and sequential runs. | Slurm MIG job `20898`; output `/mnt/data/binhnt6/trm_runs/results/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/learnability_gate_endpoint_matrix.csv`. |
+| 2026-06-20 | `CHANGE_PLAN.md`, `dataset/split_cl_dataset.py`, `scripts/eval_cl_learnability_gate.py`, `scripts/run_single_dataset_cl_learnability_gate.sh`, `scripts/run_maze_cl_gate.sh` | Added Maze path-length split support and a reproducible Maze CL learnability gate. | `python3 -m py_compile dataset/split_cl_dataset.py scripts/eval_cl_learnability_gate.py scripts/eval_cl_endpoint_matrix.py`; `bash -n scripts/run_single_dataset_cl_learnability_gate.sh scripts/run_maze_cl_gate.sh`; Maze split smoke test. |
 
 ## 12. Smoke Run Log
 
@@ -858,7 +887,252 @@ Sudoku split more learnable, likely with augmentation or a milder difficulty
 split, before adding process-flow diagnostics or FR-RFC losses.
 ```
 
-## 16. Notes
+## 16. Maze Path-Length CL Gate
+
+### 2026-06-20: Added Maze Gate Setup
+
+Purpose:
+
+```text
+Move the next TRM-native hypothesis test to a dataset with a cleaner process
+depth axis, while keeping Sudoku as a separate branch.
+```
+
+The current Sudoku blank-count gate showed that the infrastructure works, but
+the current no-augmentation Sudoku split is not yet learnable enough for a
+scientific process-forgetting test. Maze is the next candidate because the
+solution path length gives a direct old-task stress axis:
+
+```text
+shorter paths vs longer paths
+normal rollout vs longer rollout
+endpoint accuracy vs path/process stability
+```
+
+Implemented:
+
+```text
+dataset/split_cl_dataset.py
+scripts/eval_cl_learnability_gate.py
+scripts/run_single_dataset_cl_learnability_gate.sh
+scripts/run_maze_cl_gate.sh
+scripts/submit_maze_sequential_after_a.sh
+```
+
+Maze split rule:
+
+```text
+split_key: maze_path_length
+task_a_side: low
+```
+
+Task A receives shorter-path mazes. Task B receives longer-path mazes.
+
+The Maze dataset encodes the solution path character `o` as token id `5`, so
+the path-length score is:
+
+```text
+(labels == 5).sum(axis=1)
+```
+
+Local source dataset:
+
+```text
+/mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug
+```
+
+Approximate half-split path-length stats:
+
+| Split | Task | Examples | Path min | Path median | Path mean | Path max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| train | Task A low half | 500 | 108 | 109 | 109.258 | 111 |
+| train | Task B high half | 500 | 111 | 115 | 116.870 | 145 |
+| test | Task A low half | 500 | 108 | 109 | 109.208 | 111 |
+| test | Task B high half | 500 | 111 | 114 | 115.830 | 152 |
+
+The separation is real but not huge. This means the first Maze run should be
+treated as a learnability/interference gate, not as a final process-forgetting
+experiment.
+
+Maze gate command:
+
+```bash
+sbatch scripts/run_maze_cl_gate.sh
+```
+
+Default run configuration:
+
+```text
+source_data: /mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug
+split_key: maze_path_length
+task_a_side: low
+max_train_groups: 1000
+max_test_groups: 400
+arch: trm
+arch.mlp_t: False
+arch.L_layers: 2
+halt_max_steps: 16
+epochs_a: 2500
+epochs_b: 2500
+epochs_joint: 2500
+global_batch_size: 64
+EMA: False
+DISABLE_COMPILE: 1
+```
+
+The gate runs:
+
+| Run | Meaning |
+| --- | --- |
+| `a_only` | Train from scratch on short-path Task A only. |
+| `b_only` | Train from scratch on long-path Task B only. |
+| `joint_ab` | Train from scratch on Task A and Task B together. |
+| `sequential_b` | Train Task A, then fine-tune on Task B. |
+
+Pass criteria before process diagnostics:
+
+```text
+A-only should learn Task A.
+B-only should learn Task B.
+Joint should learn both reasonably.
+Sequential A -> B should learn Task B.
+Then check whether old Task A endpoint, longer-rollout behavior, or path
+process metrics degrade after Task B.
+```
+
+Caveat:
+
+```text
+Maze sequence length is 900, compared with Sudoku sequence length 81. The
+official README reports Maze as a longer run, so the first job should be
+monitored for MIG throughput and memory before scaling to multiple seeds.
+The first 128-batch MIG attempt OOMed immediately, so the script defaults were
+changed to batch size 64 and 2500 epochs per phase. This keeps the same rough
+optimizer-step budget as 5000 epochs with batch size 128.
+```
+
+Verification completed:
+
+```text
+python3 -m py_compile dataset/split_cl_dataset.py scripts/eval_cl_learnability_gate.py scripts/eval_cl_endpoint_matrix.py
+bash -n scripts/run_single_dataset_cl_learnability_gate.sh scripts/run_maze_cl_gate.sh
+python3 -m dataset.split_cl_dataset --input-dir /mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug --output-dir /mnt/data/binhnt6/trm_data/cl_splits/maze_pathlen_split_smoke --split-key maze_path_length --task-a-side low --task-a-fraction 0.5 --max-train-groups 20 --max-test-groups 20 --overwrite
+```
+
+### 2026-06-20: First Maze Gate Execution and Partial Results
+
+Run id:
+
+```text
+maze_cl_gate_pathlen_20260620_015643
+```
+
+Main paths:
+
+```text
+split_dir: /mnt/data/binhnt6/trm_data/cl_splits/maze_cl_gate_pathlen_20260620_015643
+checkpoint_root: /mnt/data/binhnt6/trm_runs/checkpoints/maze_cl_gate_pathlen_20260620_015643
+result_root: /mnt/data/binhnt6/trm_runs/results/maze_cl_gate_pathlen_20260620_015643
+partial_result_csv: /mnt/data/binhnt6/trm_runs/results/maze_cl_gate_pathlen_20260620_015643/partial_done_endpoint_matrix.csv
+```
+
+Execution notes:
+
+1. The first Maze job with `global_batch_size=128` failed immediately with CUDA
+   OOM on a 40GB MIG GPU.
+2. The script defaults were changed to `global_batch_size=64` and
+   `epochs=2500` per phase.
+3. The serial gate was split into parallel branches after `a_only` completed:
+   `b_only_parallel`, `joint_ab_parallel`, and `sequential_b_parallel`.
+4. `a_only`, `b_only_parallel`, and `sequential_b_parallel` completed.
+5. The first `joint_ab_parallel` job completed training but failed during
+   built-in validation with:
+
+```text
+KeyError: 'all1'
+```
+
+Cause:
+
+```text
+TRM training accepted data_paths=[task_a,task_b], but validation created set
+names all and all1 while the evaluator expected only the metadata set all.
+```
+
+Fix:
+
+```text
+Created a merged Task A+B dataset:
+/mnt/data/binhnt6/trm_data/cl_splits/maze_cl_gate_pathlen_20260620_015643/task_ab
+```
+
+The joint-only rerun is now using:
+
+```text
+data_paths=[/mnt/data/binhnt6/trm_data/cl_splits/maze_cl_gate_pathlen_20260620_015643/task_ab]
+```
+
+The generic learnability-gate runner was also updated to create this merged
+`task_ab` dataset automatically and to use it for future joint A+B runs. This
+prevents the same `all1` validation failure in later runs.
+
+Current branch status:
+
+| Branch | Slurm job | Status | Checkpoint |
+| --- | ---: | --- | --- |
+| `a_only` | `21005` | completed before serial job was canceled | `a_only/step_19531` |
+| `b_only_parallel` | `21015` | completed | `b_only_parallel/step_19531` |
+| `sequential_b_parallel` | `21021` | completed | `sequential_b_parallel/step_19531` |
+| `joint_ab_parallel` | `21016` | failed after training during validation | none |
+| `joint_ab_rerun` | `21096` | running | pending |
+
+Completed-branch endpoint matrix:
+
+| Checkpoint | Eval split | Token accuracy | Exact accuracy | LM loss | Steps |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `a_only` | Task A test | 0.976 | 0.290 | 0.089 | 16.0 |
+| `a_only` | Task B test | 0.974 | 0.295 | 0.095 | 16.0 |
+| `b_only` | Task A test | 0.970 | 0.130 | 0.088 | 16.0 |
+| `b_only` | Task B test | 0.969 | 0.115 | 0.092 | 16.0 |
+| `sequential_b` | Task A test | 0.984 | 0.480 | 0.064 | 16.0 |
+| `sequential_b` | Task B test | 0.986 | 0.585 | 0.054 | 16.0 |
+
+Current interpretation:
+
+```text
+The completed Maze branches do not show forgetting.
+Sequential A -> B improves both Task A and Task B compared with A-only/B-only.
+```
+
+This means the first Maze split is currently behaving like positive transfer or
+curriculum learning, not like a process-forgetting setting. The split is useful
+because TRM learns Maze much better than the first Sudoku gate, but the current
+short-path / long-path split is probably too similar or too easy to transfer
+across.
+
+Important comparison:
+
+```text
+A-only Task A exact:       0.290
+A-only Task B exact:       0.295
+Sequential Task A exact:   0.480
+Sequential Task B exact:   0.585
+```
+
+The A-only model already performs about equally on Task A and Task B, so this
+path-length split does not yet create a clean old/new task separation.
+
+Next steps after the joint rerun finishes:
+
+1. Evaluate the full matrix including `joint_ab_rerun`.
+2. Record whether joint training is better than sequential training.
+3. If joint and sequential both improve both tasks, mark this Maze split as a
+   learnability-positive but forgetting-negative gate.
+4. Try a sharper Maze split if needed, for example larger path-length gap,
+   different maze-generation regime, or train on long-path first then
+   fine-tune on short-path to test shallow-solver interference.
+
+## 17. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.

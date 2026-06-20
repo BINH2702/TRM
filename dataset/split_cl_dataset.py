@@ -11,6 +11,7 @@ from dataset.common import PuzzleDatasetMetadata
 
 FIELDS = ("inputs", "labels", "puzzle_identifiers", "puzzle_indices", "group_indices")
 ROOT_METADATA_FILES = ("identifiers.json", "test_puzzles.json")
+MAZE_PATH_TOKEN_ID = 5
 
 
 def _load_metadata(dataset_dir: Path, split: str) -> PuzzleDatasetMetadata:
@@ -68,6 +69,29 @@ def _score_groups_sudoku_blanks(arrays: dict[str, np.ndarray]) -> np.ndarray:
     return np.asarray(scores, dtype=np.float32)
 
 
+def _score_groups_maze_path_length(arrays: dict[str, np.ndarray]) -> np.ndarray:
+    labels = arrays["labels"]
+    puzzle_indices = arrays["puzzle_indices"]
+    group_indices = arrays["group_indices"]
+
+    scores = []
+    for group_id in range(group_indices.size - 1):
+        puzzle_start = int(group_indices[group_id])
+        puzzle_end = int(group_indices[group_id + 1])
+        group_scores = []
+
+        for puzzle_id in range(puzzle_start, puzzle_end):
+            example_start = int(puzzle_indices[puzzle_id])
+            example_end = int(puzzle_indices[puzzle_id + 1])
+            # Maze builder maps CHARSET="# SGo" to token ids 1..5, so the
+            # solution path character "o" is token 5 in the label grid.
+            group_scores.extend((labels[example_start:example_end] == MAZE_PATH_TOKEN_ID).sum(axis=1).tolist())
+
+        scores.append(float(np.mean(group_scores)))
+
+    return np.asarray(scores, dtype=np.float32)
+
+
 def _select_ordered_group_ids(
     arrays: dict[str, np.ndarray],
     task_a_fraction: float,
@@ -75,10 +99,12 @@ def _select_ordered_group_ids(
     task_a_side: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     num_groups = int(arrays["group_indices"].size - 1)
-    if split_key != "sudoku_blanks":
+    if split_key == "sudoku_blanks":
+        scores = _score_groups_sudoku_blanks(arrays)
+    elif split_key == "maze_path_length":
+        scores = _score_groups_maze_path_length(arrays)
+    else:
         raise ValueError(f"Unsupported ordered split key: {split_key}")
-
-    scores = _score_groups_sudoku_blanks(arrays)
     group_ids = np.arange(num_groups)
     order = np.lexsort((group_ids, scores))
     if task_a_side == "high":
@@ -292,7 +318,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-a-fraction", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--splits", nargs="+", default=["train", "test"])
-    parser.add_argument("--split-key", choices=["random", "sudoku_blanks"], default="random")
+    parser.add_argument("--split-key", choices=["random", "sudoku_blanks", "maze_path_length"], default="random")
     parser.add_argument("--task-a-side", choices=["low", "high"], default="low", help="For ordered splits, choose whether Task A gets low-score or high-score groups.")
     parser.add_argument("--max-train-groups", type=int, default=None, help="Optional cap for train groups before writing each task split.")
     parser.add_argument("--max-test-groups", type=int, default=None, help="Optional cap for test groups before writing each task split.")
