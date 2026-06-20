@@ -67,12 +67,13 @@ Task B checkpoint on Task B test
 /mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug
 ```
 
-5. Ran three TRM-native Sudoku CL experiments:
+5. Ran four TRM-native Sudoku CL experiments:
 
 ```text
 sudoku_cl_smoke_20260619_035939
 sudoku_cl_real_20260619_040846
 sudoku_cl_hard_blanks_20260619_063039
+sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517
 ```
 
 ### Main Result So Far
@@ -87,14 +88,16 @@ Summary:
 | `sudoku_cl_smoke_20260619_035939` | tiny random Sudoku split | Pipeline completed, but accuracy was too low to interpret. | Smoke test only. |
 | `sudoku_cl_real_20260619_040846` | random Sudoku A/B split | Old Task A exact accuracy increased from 0.065 to 0.080 after Task B fine-tuning. | First endpoint baseline; random split is too homogeneous. |
 | `sudoku_cl_hard_blanks_20260619_063039` | easy Sudoku by blank count -> harder Sudoku by blank count | Old Task A exact accuracy increased from 0.100 to 0.110 after Task B fine-tuning, while Task B exact accuracy stayed at 0.005. | Harder distribution split, but not a clean forgetting test because Task B did not learn. |
+| `sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517` | same blank-count split, `arch.mlp_t=True` | A-only, B-only, joint A+B, and sequential A->B completed. Best B exact is sequential at 0.040; best A exact is sequential at 0.135. | Learnability gate; still not strong enough for scientific CL forgetting because B-only and joint B exact remain very low. |
 
 Main conclusion:
 
 ```text
 The TRM-native CL pipeline is working, but no endpoint forgetting has appeared
-yet. The harder blank-count split creates distribution shift, but Task B is too
-hard under the current budget, so the result is not yet a strong
-stability-plasticity test.
+yet. The harder blank-count split creates distribution shift, but Task B remains
+too weak under the current no-augmentation budget, even with the Sudoku-style
+`arch.mlp_t=True` setting. The result is not yet a strong stability-plasticity
+test.
 ```
 
 The longer Sudoku run is the first useful endpoint baseline.
@@ -171,9 +174,10 @@ Sudoku split A -> Sudoku split B
 The next scientific step is not another random Sudoku split. The next step
 should be one of:
 
-1. Add TRM process-trace diagnostics for the saved checkpoints.
-2. Increase Task B learning or use a more learnable hard split.
-3. Run Maze split A -> Maze split B after confirming compute budget.
+1. Build a more learnable Sudoku split or use augmented Sudoku.
+2. Increase Task B learning strength before making forgetting claims.
+3. Add TRM process-trace diagnostics only after endpoint learnability improves.
+4. Run Maze split A -> Maze split B after confirming compute budget.
 
 ## 3. TRM-Native Hypothesis
 
@@ -424,6 +428,7 @@ and the Task B finetuned checkpoint on old Task A examples.
 | 2026-06-19 | `CHANGE_PLAN.md`, `dataset/split_cl_dataset.py`, `scripts/run_single_dataset_cl_finetune.sh` | Added smoke-run split caps, configurable EMA, and recorded the Sudoku CL smoke run. | `python3 -m py_compile dataset/split_cl_dataset.py`; `bash -n scripts/run_single_dataset_cl_finetune.sh`; Slurm MIG run `sudoku_cl_smoke_20260619_035939`. |
 | 2026-06-19 | `CHANGE_PLAN.md`, `scripts/eval_cl_endpoint_matrix.py` | Added endpoint-matrix evaluator and recorded the longer Sudoku CL run. | Slurm MIG run `sudoku_cl_real_20260619_040846`; standalone endpoint evaluation wrote `/mnt/data/binhnt6/trm_runs/results/sudoku_cl_real_20260619_040846_endpoint_matrix.csv`. |
 | 2026-06-19 | `CHANGE_PLAN.md`, `dataset/split_cl_dataset.py`, `scripts/run_single_dataset_cl_finetune.sh` | Added Sudoku blank-count split support and recorded the harder easy-to-hard Sudoku CL run. | `python3 -m py_compile dataset/split_cl_dataset.py scripts/eval_cl_endpoint_matrix.py`; `bash -n scripts/run_single_dataset_cl_finetune.sh`; Slurm MIG run `sudoku_cl_hard_blanks_20260619_063039`. |
+| 2026-06-20 | `CHANGE_PLAN.md` | Recorded the one-GPU Sudoku learnability gate with A-only, B-only, joint, and sequential runs. | Slurm MIG job `20898`; output `/mnt/data/binhnt6/trm_runs/results/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/learnability_gate_endpoint_matrix.csv`. |
 
 ## 12. Smoke Run Log
 
@@ -695,7 +700,165 @@ Use this hard split for process diagnostics, or increase Task B learning budget
 / use a more learnable split before testing forgetting claims.
 ```
 
-## 15. Notes
+## 15. One-GPU Sudoku Learnability Gate
+
+### 2026-06-19: Blank-Count Learnability Gate
+
+Run id:
+
+```text
+sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517
+```
+
+Purpose:
+
+```text
+Check whether the current blank-count Sudoku split is learnable enough for a
+meaningful continual-learning experiment.
+```
+
+This is a gate, not yet a process-forgetting experiment. The gate asks:
+
+```text
+Can Task A learn by itself?
+Can Task B learn by itself?
+Can Task A and Task B learn jointly?
+Can Task B be learned after Task A in a sequential A -> B run?
+```
+
+Slurm job:
+
+```text
+job_id: 20898
+partition: mig
+gpu: 1 MIG GPU
+cpus_per_task: 4
+mem: 20G
+state: COMPLETED
+exit_code: 0
+elapsed: 03:48:33
+```
+
+Dataset:
+
+```text
+source: /mnt/data/binhnt6/trm_data/sudoku-extreme-1k-noaug
+split:  /mnt/data/binhnt6/trm_data/cl_splits/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517
+```
+
+Split rule:
+
+```text
+split_key: sudoku_blanks
+task_a_side: low
+```
+
+Task A gets easier Sudoku puzzles with fewer blank cells. Task B gets harder
+Sudoku puzzles with more blank cells.
+
+Blank-count separation:
+
+| Task | Split | Examples | Blank min | Blank max | Blank mean |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Task A | train | 500 | 46 | 56 | 54.46 |
+| Task A | test | 200 | 46 | 56 | 55.07 |
+| Task B | train | 500 | 56 | 64 | 57.13 |
+| Task B | test | 200 | 57 | 64 | 57.57 |
+
+Model and training configuration:
+
+```text
+arch: trm
+arch.mlp_t: True
+H_cycles: 3
+L_cycles: 6
+halt_max_steps: 16
+hidden_size: 512
+epochs per single-task phase: 5000
+global_batch_size: 128
+lr: 1e-4
+puzzle_emb_lr: 1e-4
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+EMA: False
+DISABLE_COMPILE: 1
+```
+
+The `arch.mlp_t=True` setting was used because the TRM README uses the
+Sudoku-style MLP transition setting for strong Sudoku runs.
+
+Runs completed:
+
+| Run | Meaning | Training steps |
+| --- | --- | ---: |
+| `a_only` | Train from scratch on Task A only. | 19,531 |
+| `b_only` | Train from scratch on Task B only. | 19,531 |
+| `joint_ab` | Train from scratch on Task A and Task B together. | 39,062 |
+| `sequential_b` | Train Task A, then fine-tune on Task B. | 19,531 for Task B after Task A |
+
+Artifacts:
+
+```text
+log: /mnt/data/binhnt6/trm_runs/logs/trm_cl_gate_1gpu_20898.out
+stderr/progress: /mnt/data/binhnt6/trm_runs/logs/trm_cl_gate_1gpu_20898.err
+result_csv: /mnt/data/binhnt6/trm_runs/results/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/learnability_gate_endpoint_matrix.csv
+a_only_checkpoint: /mnt/data/binhnt6/trm_runs/checkpoints/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/a_only/step_19531
+b_only_checkpoint: /mnt/data/binhnt6/trm_runs/checkpoints/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/b_only/step_19531
+joint_checkpoint: /mnt/data/binhnt6/trm_runs/checkpoints/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/joint_ab/step_39062
+sequential_checkpoint: /mnt/data/binhnt6/trm_runs/checkpoints/sudoku_cl_gate_1gpu_blanks_mlp_t_20260619_085517/sequential_b/step_19531
+```
+
+Endpoint matrix:
+
+| Checkpoint | Eval split | Token accuracy | Exact accuracy | LM loss | Inference steps |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `a_only` | Task A test | 0.634 | 0.090 | 2.118 | 16.0 |
+| `a_only` | Task B test | 0.545 | 0.015 | 2.621 | 16.0 |
+| `b_only` | Task A test | 0.635 | 0.075 | 1.396 | 16.0 |
+| `b_only` | Task B test | 0.538 | 0.010 | 1.766 | 16.0 |
+| `joint_ab` | Task A test | 0.646 | 0.095 | 1.570 | 16.0 |
+| `joint_ab` | Task B test | 0.556 | 0.020 | 1.947 | 16.0 |
+| `sequential_b` | Task A test | 0.670 | 0.135 | 1.295 | 16.0 |
+| `sequential_b` | Task B test | 0.569 | 0.040 | 1.669 | 16.0 |
+
+Outcome:
+
+```text
+The one-GPU learnability gate completed successfully.
+No endpoint forgetting is visible: sequential A -> B has the best Task A exact
+accuracy, 0.135, compared with 0.090 for A-only.
+```
+
+Main interpretation:
+
+```text
+The current no-augmentation blank-count Sudoku split is still not a clean
+continual-learning forgetting setup. Task B remains weak even when trained
+from scratch or jointly.
+```
+
+Evidence:
+
+```text
+B-only Task B exact:      0.010
+Joint A+B Task B exact:   0.020
+Sequential Task B exact:  0.040
+```
+
+The sequential run improves Task B somewhat, but 4% exact accuracy is still too
+low for a scientific process-forgetting experiment. A weak Task B learner cannot
+produce a meaningful stability-plasticity test.
+
+Current conclusion:
+
+```text
+The TRM-native CL infrastructure works, and the one-GPU gate confirms that the
+current Sudoku setup is the bottleneck. The next step should be to make the
+Sudoku split more learnable, likely with augmentation or a milder difficulty
+split, before adding process-flow diagnostics or FR-RFC losses.
+```
+
+## 16. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
