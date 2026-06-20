@@ -1266,6 +1266,85 @@ Only if there are enough examples solved late should we build the
 Deep@16 -> FastShallow@4/8 CL gate.
 ```
 
+### 2026-06-20: K=1/K=2 Early-Horizon Probe
+
+Purpose:
+
+```text
+Check whether the depth axis is hidden below K=4. With H_cycles=3 and L_cycles=6,
+K=4 may already contain enough internal computation to solve most examples that
+the current model can solve.
+```
+
+Run:
+
+```text
+Slurm job: 21175
+Output root:
+/mnt/data/binhnt6/trm_runs/results/maze_cl_gate_pathlen_20260620_015643
+
+A-only teacher:
+solved_depth_k12_a_teacher
+
+Sequential checkpoint:
+solved_depth_k12_sequential_b
+```
+
+A-only teacher:
+
+| Eval split | K=1 exact | K=2 exact | K=4 exact | K=8 exact | K=16 exact | K=32 exact |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Task A | 0.000 | 0.170 | 0.285 | 0.295 | 0.290 | 0.280 |
+| Task B | 0.000 | 0.180 | 0.275 | 0.290 | 0.295 | 0.290 |
+
+Sequential checkpoint:
+
+| Eval split | K=1 exact | K=2 exact | K=4 exact | K=8 exact | K=16 exact | K=32 exact |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Task A | 0.000 | 0.400 | 0.495 | 0.495 | 0.480 | 0.490 |
+| Task B | 0.000 | 0.445 | 0.590 | 0.600 | 0.585 | 0.605 |
+
+Solved-depth buckets with K=1/K=2 included:
+
+| Checkpoint | Eval split | solved@1 | solved@2 | solved@4 | solved@8 | solved@16 | solved@32 | unsolved@32 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A-only | Task A | 0 | 34 | 24 | 6 | 0 | 0 | 136 |
+| A-only | Task B | 0 | 36 | 21 | 4 | 1 | 0 | 138 |
+| Sequential | Task A | 0 | 80 | 27 | 6 | 2 | 0 | 85 |
+| Sequential | Task B | 0 | 89 | 33 | 5 | 2 | 1 | 70 |
+
+Reading:
+
+```text
+There is an early-depth axis from K=1 to K=2/K=4.
+There is still almost no late-depth axis after K=4.
+```
+
+This changes the possible fast-shallow design:
+
+```text
+K_B=4 is probably not a strong fast-shallow pressure because K=4 is already
+near saturation for the current checkpoint family.
+
+If we keep a depth-based Maze direction, the only plausible pressure is K_B=1
+or K_B=2, not K_B=4/K_B=8.
+```
+
+But K=1 is too hard in the current checkpoints:
+
+```text
+exact@1 = 0.000 for both A-only and sequential checkpoints.
+```
+
+So the next practical recommendation remains:
+
+```text
+Do not launch deep->fast-shallow CL yet.
+First either train a stronger/paper-style Maze teacher and rerun this probe,
+or move to a real same-format Maze task-conflict gate such as shortest-path ->
+distance-map / next-hop-policy.
+```
+
 ## 18. Notes
 
 - Keep entries short and factual.
