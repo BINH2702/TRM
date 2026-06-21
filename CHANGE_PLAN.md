@@ -2093,7 +2093,220 @@ Immediate diagnostic targets:
    multihorizon and free-running TRM-flow preservation.
 ```
 
-## 23. Notes
+## 23. Maze Path -> Policy Horizon and Process Diagnostic
+
+### Goal
+
+After the replay gate passed the endpoint-preservation precondition, the next
+question was:
+
+```text
+Does endpoint replay preserve visible Task A path behavior while the old TRM
+recursive process or longer-rollout behavior is still damaged?
+```
+
+This diagnostic used the existing checkpoints only. No training was run.
+
+### Implementation
+
+Added evaluation-only scripts:
+
+```text
+scripts/eval_maze_policy_horizon_diag.py
+  - evaluates saved Path -> Policy checkpoints at K = 1, 2, 4, 8, 16, 32, 64
+  - computes Task A path functional metrics and Task B policy functional metrics
+  - writes per-example rows, horizon summaries, output drift vs a_only, and
+    matched-valid Task A subset summaries
+
+scripts/eval_maze_trace_drift.py
+  - compares Task A hidden/logit traces against the a_only reference
+  - reports z_H, z_L, delta-z, logits, q_halt, and q_continue drift
+  - reports both all Task A examples and the matched-valid K=16 subset
+```
+
+Output directory:
+
+```text
+/mnt/data/binhnt6/trm_runs/results/binh_job_replay_m128_20260621_132805/horizon_diag_v1
+```
+
+Files:
+
+```text
+horizon_summary.csv
+horizon_per_example.csv
+output_drift_vs_reference.csv
+matched_valid_task_a_summary.csv
+matched_valid_task_a_indices.txt
+trace_drift_task_a.csv
+```
+
+Matched-valid subset:
+
+```text
+Task A examples where both a_only and sequential_replay_m128 are valid at K=16:
+79 examples
+```
+
+### Task A Horizon Result
+
+Task A path metrics:
+
+| Checkpoint | K=16 valid | K=64 valid | K=16 F1 | K=64 F1 | K=16 token | K=64 token |
+|---|---:|---:|---:|---:|---:|---:|
+| `a_only` | 0.188 | 0.191 | 0.858 | 0.858 | 0.964 | 0.964 |
+| `joint_ab` | 0.247 | 0.249 | 0.856 | 0.857 | 0.965 | 0.966 |
+| `sequential_b` | 0.000 | 0.000 | 0.175 | 0.175 | 0.369 | 0.369 |
+| `sequential_replay_m128` | 0.285 | 0.278 | 0.847 | 0.847 | 0.961 | 0.961 |
+
+Reading:
+
+```text
+Replay preserves old Task A path behavior at K=16 and remains mostly stable
+through K=64. There is no strong overthinking collapse in the all-example
+Task A metrics.
+```
+
+### Task B Horizon Result
+
+Task B policy rollout:
+
+| Checkpoint | K=16 rollout | K=64 rollout | K=16 reachable | K=64 reachable |
+|---|---:|---:|---:|---:|
+| `a_only` | 0.000 | 0.000 | 0.287 | 0.287 |
+| `joint_ab` | 0.447 | 0.438 | 0.900 | 0.899 |
+| `sequential_b` | 0.726 | 0.726 | 0.961 | 0.962 |
+| `sequential_replay_m128` | 0.433 | 0.442 | 0.931 | 0.931 |
+
+Reading:
+
+```text
+Replay keeps Task B partially learned and does not show a long-rollout collapse.
+The tradeoff from Section 22 remains: replay protects old Task A but reduces
+Task B rollout success relative to plain sequential_b.
+```
+
+### Matched-Valid Subset
+
+For the 79 examples where both `a_only` and `sequential_replay_m128` are valid
+at K=16:
+
+| Checkpoint | K=16 valid | K=64 valid | K=16 F1 | K=64 F1 | K=16 token | K=64 token |
+|---|---:|---:|---:|---:|---:|---:|
+| `a_only` | 1.000 | 0.962 | 0.949 | 0.950 | 0.987 | 0.987 |
+| `joint_ab` | 0.405 | 0.418 | 0.907 | 0.906 | 0.978 | 0.978 |
+| `sequential_b` | 0.000 | 0.000 | 0.159 | 0.158 | 0.358 | 0.357 |
+| `sequential_replay_m128` | 1.000 | 0.924 | 0.937 | 0.939 | 0.984 | 0.984 |
+
+Reading:
+
+```text
+On matched-valid examples, replay is endpoint-matched at K=16 but loses a small
+amount of validity under longer rollout:
+  a_only: 1.000 -> 0.962
+  replay: 1.000 -> 0.924
+
+This is a weak overthinking/stability signal, not a strong functional collapse.
+```
+
+### Output Drift vs a_only
+
+Task A output drift at K=16:
+
+| Checkpoint | Token disagreement | Path-mask disagreement | q_halt abs diff |
+|---|---:|---:|---:|
+| `joint_ab` | 0.042 | 0.042 | 2.929 |
+| `sequential_b` | 0.631 | 0.270 | 3.060 |
+| `sequential_replay_m128` | 0.046 | 0.046 | 2.121 |
+
+Reading:
+
+```text
+Replay has low output/path-mask drift, close to joint training and far below
+plain sequential_b. The q_halt drift is nontrivial despite endpoint recovery.
+```
+
+### Hidden Trace Drift
+
+Task A hidden/logit drift against `a_only` at K=16, all examples:
+
+| Checkpoint | z_H RMSE | z_L RMSE | delta-z_H RMSE | delta-z_L RMSE | logits RMSE | q_halt abs diff |
+|---|---:|---:|---:|---:|---:|---:|
+| `joint_ab` | 0.738 | 1.363 | 0.053 | 0.085 | 21.262 | 2.929 |
+| `sequential_b` | 1.285 | 1.067 | 0.141 | 0.188 | 41.409 | 3.060 |
+| `sequential_replay_m128` | 0.482 | 0.969 | 0.099 | 0.216 | 21.053 | 2.121 |
+
+Task A hidden/logit drift against `a_only` at K=16, matched-valid subset:
+
+| Checkpoint | z_H RMSE | z_L RMSE | delta-z_H RMSE | delta-z_L RMSE | logits RMSE | q_halt abs diff |
+|---|---:|---:|---:|---:|---:|---:|
+| `joint_ab` | 0.743 | 1.364 | 0.039 | 0.066 | 20.792 | 2.794 |
+| `sequential_b` | 1.283 | 1.069 | 0.131 | 0.178 | 41.336 | 2.181 |
+| `sequential_replay_m128` | 0.436 | 0.948 | 0.070 | 0.173 | 20.436 | 2.167 |
+
+Reading:
+
+```text
+Replay has much lower drift than plain sequential_b and is close to joint on
+output/logit drift. It still uses a different hidden and q-head trajectory than
+a_only even when visible Task A endpoints are matched.
+```
+
+### Scientific Interpretation
+
+This diagnostic gives a partial but not final process-forgetting signal.
+
+Supported:
+
+```text
+1. Endpoint replay preserves old Task A path behavior.
+2. Plain sequential_b causes severe output and hidden-process drift.
+3. replay_m128 strongly reduces output drift and preserves Task A across
+   horizons.
+4. replay_m128 still has nontrivial hidden/q-head drift relative to a_only on
+   matched-valid examples.
+```
+
+Not yet supported:
+
+```text
+The current replay_m128 setting does not show strong endpoint-preserved
+functional collapse under longer rollout. The K=16 -> K=64 drop is small.
+```
+
+Best current reading:
+
+```text
+This is a real TRM endpoint-preserved process-drift diagnostic, but not yet the
+strong paper phenomenon. The setting is currently too protected by replay_m128
+to expose a large hard-stress failure.
+```
+
+### Next Step
+
+Run a replay boundary sweep rather than adding FR-flow immediately.
+
+Recommended next sweep:
+
+```text
+REPLAY_MEMORY = 16, 32, 64, 128
+same Path -> Policy Task-IL setup
+same K = 1, 2, 4, 8, 16, 32, 64 diagnostics
+```
+
+Target boundary:
+
+```text
+old Task A path F1 / valid path mostly preserved at K=16
+Task B policy still learned
+but old Task A longer-rollout stability, q-head behavior, or hidden trace drift
+is worse than in replay_m128
+```
+
+If all replay settings are stable, the next pressure knob should be replay
+ratio / explicit weighted old loss rather than FR-flow.
+
+## 24. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
