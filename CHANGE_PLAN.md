@@ -1463,7 +1463,185 @@ Next meaningful options:
    shortest path -> distance map / next-hop policy.
 ```
 
-## 19. Notes
+## 19. Maze Path -> Next-Hop Policy Quick Gate
+
+### Purpose
+
+The path-length Maze split did not create a useful continual-learning failure
+mode. It behaved like more training on the same shortest-path task. The next
+gate therefore changed Task B while keeping the same Maze input format and TRM
+architecture:
+
+```text
+Task A: Maze shortest-path output.
+Task B: Maze next-hop policy output.
+```
+
+This is still a TRM-native Maze reasoning setup, but Task B asks for a different
+recursive target. The goal of this gate was not to prove process forgetting yet.
+It was to check whether the task pair is learnable and separated enough to
+justify a real CL experiment.
+
+### Code Implementation
+
+New implementation files:
+
+```text
+dataset/build_maze_policy_dataset.py
+scripts/run_two_dataset_cl_learnability_gate.sh
+scripts/run_maze_policy_cl_gate.sh
+```
+
+`dataset/build_maze_policy_dataset.py` builds a derived Maze policy dataset from
+the existing prepared Maze data.
+
+Policy labels:
+
+| Label | Meaning |
+| ---: | --- |
+| 0 | ignored wall / unreachable / padding |
+| 1 | goal cell |
+| 2 | move up |
+| 3 | move down |
+| 4 | move left |
+| 5 | move right |
+
+For each Maze input, the script runs BFS from the goal over non-wall cells. Each
+reachable non-goal cell receives a direction label pointing to a neighbor with
+distance one step closer to the goal. This creates a global next-hop policy
+target using the same `seq_len=900` and `vocab_size=6` shape as the original
+Maze task.
+
+`scripts/run_two_dataset_cl_learnability_gate.sh` is a generic two-dataset CL
+gate. It trains:
+
+```text
+a_only:       train from scratch on Task A only
+b_only:       train from scratch on Task B only
+joint_ab:     train from scratch on Task A + Task B merged together
+sequential_b: train Task A, then continue on Task B
+```
+
+It also evaluates all four checkpoints on both test splits and writes an
+endpoint matrix.
+
+`scripts/run_maze_policy_cl_gate.sh` is the Maze-specific Slurm wrapper. It now
+uses the generic public job name:
+
+```text
+binh_job
+```
+
+and redirects W&B/cache/temp output to:
+
+```text
+/mnt/data/binhnt6
+```
+
+so future runs do not write Hydra/W&B/cache data under the full `/home`
+filesystem.
+
+### Run Setting
+
+Completed quick gate:
+
+```text
+run id: maze_policy_gate_20260621_103704
+allocation: 21301 / binh_job
+device: 1 full H100 allocation
+Task A data: /mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug
+Task B data: /mnt/data/binhnt6/trm_data/maze-30x30-hard-1k-noaug-next-hop-policy
+epochs A/B: 250
+epochs joint: 250
+batch size: 64
+eval horizon: 16 steps
+EMA: false
+```
+
+Output matrix:
+
+```text
+/mnt/data/binhnt6/trm_runs/results/maze_policy_gate_20260621_103704/learnability_gate_endpoint_matrix.csv
+```
+
+Checkpoint root:
+
+```text
+/mnt/data/binhnt6/trm_runs/checkpoints/maze_policy_gate_20260621_103704
+```
+
+### Result
+
+| Checkpoint | Task A token acc | Task A exact | Task B token acc | Task B exact |
+| --- | ---: | ---: | ---: | ---: |
+| `a_only` | 0.961 | 0.026 | 0.288 | 0.000 |
+| `b_only` | 0.175 | 0.000 | 0.914 | 0.018 |
+| `joint_ab` | 0.769 | 0.000 | 0.499 | 0.000 |
+| `sequential_b` | 0.540 | 0.000 | 0.972 | 0.046 |
+
+### Interpretation
+
+This gate is much more separated than the previous path-length Maze split:
+
+```text
+a_only learns Task A token structure but does not solve Task B.
+b_only learns Task B token structure but does not solve Task A.
+sequential_b learns Task B best but damages Task A strongly.
+```
+
+The sequential result is the first useful TRM-Maze interference signal in this
+branch:
+
+```text
+Task A token acc drops from 0.961 to 0.540 after Task B training.
+Task B token acc rises to 0.972 after Task B training.
+```
+
+However, exact accuracy is still too low for a final process-forgetting claim:
+
+```text
+best Task A exact: 0.026
+best Task B exact: 0.046
+joint exact: 0.000 on both tasks
+```
+
+So this is a useful engineering and interference gate, not yet a scientific CL
+result.
+
+### Current Decision
+
+The path -> next-hop-policy pair is worth continuing because it creates real
+task separation and sequential interference.
+
+The next real run should not add FR-flow yet. It should first strengthen this
+gate:
+
+```text
+1. Run a longer full-GPU learnability/interference gate.
+2. Add A->B endpoint replay after sequential training.
+3. Check whether replay can preserve old Task A endpoint/token behavior while
+   Task B remains learned.
+4. Only after that add TRM process diagnostics and flow preservation.
+```
+
+Pass condition for the next run:
+
+```text
+A-only learns Task A clearly.
+B-only learns Task B clearly.
+Sequential A->B learns Task B and hurts old Task A.
+Endpoint replay recovers old Task A enough to create a process-forgetting test.
+```
+
+Fail condition:
+
+```text
+If exact accuracy remains near zero even after longer training, this task pair
+is useful only as a token-level interference diagnostic, not as the main TRM
+validation.
+```
+
+## 20. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
