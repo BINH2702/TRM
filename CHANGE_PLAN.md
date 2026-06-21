@@ -1345,7 +1345,125 @@ or move to a real same-format Maze task-conflict gate such as shortest-path ->
 distance-map / next-hop-policy.
 ```
 
-## 18. Notes
+## 18. Maze Full Endpoint Matrix And Joint Result
+
+### 2026-06-21: Full A/B Endpoint Evaluation
+
+After the `joint_ab` rerun completed, a short GPU evaluation was launched to
+evaluate all four Maze gate checkpoints on the Task A and Task B test splits.
+
+Run:
+
+```text
+Slurm job: 21191
+job name: maze_full_eval
+resource: 1 MIG GPU
+elapsed: 00:02:59
+output csv:
+/mnt/data/binhnt6/trm_runs/results/maze_cl_gate_pathlen_20260620_015643/learnability_gate_endpoint_matrix.csv
+```
+
+Full endpoint matrix:
+
+| Checkpoint | Task A token acc | Task A exact | Task B token acc | Task B exact |
+| --- | ---: | ---: | ---: | ---: |
+| `a_only` | 0.976 | 0.290 | 0.974 | 0.295 |
+| `b_only` | 0.970 | 0.130 | 0.969 | 0.115 |
+| `joint_ab` | 0.964 | 0.000 | 0.963 | 0.000 |
+| `sequential_b` | 0.984 | 0.480 | 0.986 | 0.585 |
+
+### Meaning Of `joint_ab`
+
+`joint_ab` is a control baseline, not a continual-learning run.
+
+```text
+a_only: train from scratch on Task A only
+b_only: train from scratch on Task B only
+joint_ab: train from scratch on Task A + Task B together
+sequential_b: train Task A, then continue training on Task B
+```
+
+For this run:
+
+```text
+Task A = shorter-path Maze examples
+Task B = longer-path Maze examples
+joint_ab = merged Task A + Task B training set
+```
+
+The original TRM repo has the normal model and training loop, but it did not
+already include this single-dataset CL gate. The Task A/B split, merged
+`task_ab` dataset, four-branch gate, and endpoint matrix evaluation were added
+for this project.
+
+### Why Joint Exact Is Zero
+
+The joint model is not random:
+
+```text
+joint Task A token accuracy: 0.964
+joint Task B token accuracy: 0.963
+```
+
+However, Maze exact accuracy requires the whole 30x30 output to be correct.
+With 900 cells, around 96% token accuracy can still mean many wrong cells per
+maze. If every test maze has at least one wrong cell, exact accuracy is zero.
+
+Sanity checks:
+
+```text
+task_ab metadata has the expected merged sizes.
+task_ab uses the same single Maze puzzle identifier as Task A and Task B.
+checkpoint puzzle_emb shape is [1, 512] for a_only, b_only, joint_ab, and sequential_b.
+```
+
+So the zero exact result is not obviously caused by a puzzle-id or checkpoint
+shape bug. The most likely reading is that the short no-augmentation joint run
+underfits exact Maze solving.
+
+### Why This Is Not Comparable To The TRM Paper Maze Result
+
+This `joint_ab` run is normal TRM training on the merged split, but it is not
+the official-strength Maze recipe.
+
+| Item | TRM README Maze recipe | Current Maze gate |
+| --- | --- | --- |
+| Dataset | `maze-30x30-hard-1k` with 8 augmentations | `maze-30x30-hard-1k-noaug` |
+| Training | `epochs=50000` | `epochs=2500` |
+| EMA | `ema=True` | `ema=False` |
+| Cycles | `H_cycles=3`, `L_cycles=4` | `H_cycles=3`, `L_cycles=6` |
+| Purpose | final Maze training recipe | quick CL learnability gate |
+
+Therefore this gate should not be used to claim that TRM cannot solve Maze.
+It only says that the current short no-augmentation path-length gate is not a
+good scientific CL/process-forgetting setup.
+
+### Current Conclusion
+
+The completed Maze path-length gate shows:
+
+```text
+sequential A->B improves both Task A and Task B.
+joint A+B underfits exact Maze solving in this short setup.
+the split does not create forgetting.
+the split does not expose a useful late recursive-depth axis.
+```
+
+Current decision:
+
+```text
+Do not use this path-length Maze split as the main TRM validation.
+```
+
+Next meaningful options:
+
+```text
+1. Train a stronger official-style Maze teacher and rerun horizon probes.
+2. Move to a same-format Maze task-conflict gate:
+   shortest path -> distance map / next-hop policy.
+```
+
+## 19. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
