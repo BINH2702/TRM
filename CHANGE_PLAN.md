@@ -1468,3 +1468,6 @@ Next meaningful options:
 - Keep entries short and factual.
 - Include commands used for verification when possible.
 - Mention any skipped tests and the reason they were skipped.
+- Before launching GPU jobs, check this note: real training / experiment jobs
+  should request at least `24:00:00`. Use shorter allocations only for explicit
+  smoke tests or quick evaluations, and state that reason before launching.
