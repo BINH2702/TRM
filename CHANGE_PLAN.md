@@ -1641,7 +1641,301 @@ is useful only as a token-level interference diagnostic, not as the main TRM
 validation.
 ```
 
-## 20. Notes
+## 20. Maze Path -> Policy Task-IL Correction
+
+### Motivation
+
+The first path -> next-hop-policy quick gate showed real task separation, but it
+had a task-interface confound:
+
+```text
+Task A path dataset:   puzzle_identifier = 0
+Task B policy dataset: puzzle_identifier = 0
+merged task_ab:        puzzle_identifier = 0 only
+```
+
+That means the joint dataset asked the model to map the same Maze input and the
+same task condition to two different outputs. Therefore `joint_ab` was not a
+clean upper bound, and sequential forgetting could be partly ordinary
+label/head interference rather than recursive-process forgetting.
+
+### Implementation Update
+
+Added explicit Task-IL dataset handling:
+
+```text
+Task A path id:   0
+Task B policy id: 1
+num_puzzle_identifiers: 2
+```
+
+Updated files:
+
+```text
+dataset/build_maze_policy_dataset.py
+scripts/run_two_dataset_cl_learnability_gate.sh
+scripts/run_maze_policy_cl_gate.sh
+scripts/eval_cl_learnability_gate.py
+evaluators/maze.py
+```
+
+`dataset/build_maze_policy_dataset.py` now supports:
+
+```text
+--task-id
+--num-puzzle-identifiers
+```
+
+so a policy dataset can be generated directly as Task B with identifier `1`.
+
+`scripts/run_two_dataset_cl_learnability_gate.sh` now creates normalized copies
+inside the run data directory:
+
+```text
+CL_DATA_DIR/task_a
+CL_DATA_DIR/task_b
+CL_DATA_DIR/task_ab
+```
+
+These normalized datasets are what training and evaluation use. This avoids the
+checkpoint-shape problem where A-only checkpoints had one puzzle embedding but
+B-only/sequential checkpoints used two puzzle embeddings.
+
+The merged `task_ab` dataset now contains both task IDs:
+
+```text
+Task A examples -> puzzle_identifier 0
+Task B examples -> puzzle_identifier 1
+```
+
+### Functional Maze Metrics
+
+Added `evaluators/maze.py` with two evaluator classes:
+
+```text
+MazePathFunctional
+MazePolicyFunctional
+```
+
+Path metrics include:
+
+```text
+maze_path_valid_rate
+maze_path_connected_rate
+maze_path_wall_cross_rate
+maze_path_precision
+maze_path_recall
+maze_path_f1
+maze_path_length_ratio
+```
+
+Policy metrics include:
+
+```text
+maze_policy_reachable_acc
+maze_policy_rollout_success
+maze_policy_cycle_rate
+maze_policy_wall_rate
+maze_policy_offgrid_rate
+maze_policy_invalid_action_rate
+maze_policy_success_length_ratio
+```
+
+These are needed because exact grid accuracy is too harsh for Maze and raw
+token accuracy does not tell whether the predicted path or policy is
+functionally usable.
+
+`scripts/eval_cl_learnability_gate.py` now supports:
+
+```text
+--maze-functional
+```
+
+The Maze wrapper enables this by default.
+
+### What This Fixes
+
+Resolved:
+
+```text
+same-input / same-task-id label ambiguity in joint_ab
+inconsistent puzzle-embedding shape between A-only and B/sequential checkpoints
+lack of path/policy functional metrics
+public Slurm wrapper naming now uses binh_job
+W&B/cache/temp output is redirected to /mnt/data/binhnt6
+```
+
+Still not implemented:
+
+```text
+task-specific output heads
+freezing the old Task A head during Task B
+endpoint replay
+TRM hidden/process-flow diagnostics
+```
+
+The current decision is to rerun the quick gate after this correction before
+launching a long 24h training job. If the Task-IL corrected quick gate shows
+that A-only, B-only, and joint are learnable and sequential still creates
+interference, the next real run should add endpoint replay.
+
+## 21. Corrected Maze Path -> Policy Task-IL Quick Gate
+
+### Run
+
+The corrected Task-IL quick gate was run inside the 24h full-H100 Slurm
+allocation:
+
+```text
+Slurm job: 21301
+public job name: binh_job
+run id: binh_job_taskil_debug_20260621_122254
+```
+
+All run outputs were written under `/mnt/data/binhnt6`:
+
+```text
+data:
+  /mnt/data/binhnt6/trm_data/cl_two_task/binh_job_taskil_debug_20260621_122254
+
+checkpoints:
+  /mnt/data/binhnt6/trm_runs/checkpoints/binh_job_taskil_debug_20260621_122254
+
+result CSV:
+  /mnt/data/binhnt6/trm_runs/results/binh_job_taskil_debug_20260621_122254/learnability_gate_endpoint_matrix.csv
+```
+
+The first training/evaluation pass completed successfully. During review, the
+functional evaluator metrics were found to run but not appear in the CSV because
+`pretrain.evaluate` returns evaluator metrics at the top level, while the CL
+evaluation script was only returning the `"all"` split metrics. This was fixed
+in:
+
+```text
+scripts/eval_cl_learnability_gate.py
+```
+
+Then an evaluation-only pass was rerun on the same saved checkpoints. No
+retraining was needed.
+
+### Endpoint And Functional Result
+
+| Checkpoint | Eval | Token acc | Exact | Loss | Path valid | Path F1 | Policy reachable acc | Policy rollout success |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `a_only` | Task A path | 0.962 | 0.002 | 0.110 | 0.066 | 0.854 | n/a | n/a |
+| `a_only` | Task B policy | 0.283 | 0.000 | 4.531 | n/a | n/a | 0.283 | 0.000 |
+| `b_only` | Task A path | 0.186 | 0.000 | 5.170 | 0.000 | 0.179 | n/a | n/a |
+| `b_only` | Task B policy | 0.925 | 0.027 | 0.294 | n/a | n/a | 0.925 | 0.616 |
+| `joint_ab` | Task A path | 0.964 | 0.016 | 0.106 | 0.046 | 0.854 | n/a | n/a |
+| `joint_ab` | Task B policy | 0.956 | 0.042 | 0.192 | n/a | n/a | 0.956 | 0.712 |
+| `sequential_b` | Task A path | 0.542 | 0.000 | 2.836 | 0.000 | 0.229 | n/a | n/a |
+| `sequential_b` | Task B policy | 0.935 | 0.035 | 0.297 | n/a | n/a | 0.935 | 0.622 |
+
+Additional functional details:
+
+```text
+a_only Task A path wall-cross rate:       0.000
+joint_ab Task A path wall-cross rate:     0.000
+sequential_b Task A path wall-cross rate: 0.004
+
+b_only Task B policy cycle rate:          0.145
+joint_ab Task B policy cycle rate:        0.181
+sequential_b Task B policy cycle rate:    0.204
+```
+
+### Interpretation
+
+This corrected gate is meaningful and should replace the previous confounded
+path-policy quick gate.
+
+The Task-IL correction fixed the main joint-training ambiguity:
+
+```text
+previous joint_ab exact was zero on both tasks;
+corrected joint_ab now learns both tasks:
+  Task A token acc = 0.964, exact = 0.016
+  Task B token acc = 0.956, exact = 0.042
+  Task B policy rollout success = 0.712
+```
+
+The task separation is real:
+
+```text
+a_only does not solve Task B policy:
+  policy rollout success = 0.000
+
+b_only does not solve Task A path:
+  path valid rate = 0.000
+```
+
+Sequential A -> B creates strong interference:
+
+```text
+Task A path token acc:
+  a_only       0.962
+  sequential_b 0.542
+
+Task A path F1:
+  a_only       0.854
+  sequential_b 0.229
+
+Task A valid path rate:
+  a_only       0.066
+  sequential_b 0.000
+```
+
+Task B is learned after sequential training:
+
+```text
+sequential_b Task B token acc = 0.935
+sequential_b Task B rollout success = 0.622
+```
+
+Current scientific status:
+
+```text
+This is a useful TRM-native Task-IL/interference gate.
+It is not yet process forgetting.
+```
+
+It is not yet process forgetting because old Task A endpoint and functional
+behavior are not preserved after Task B. This is ordinary sequential
+interference. The next experiment should add old Task A endpoint replay so that
+the old endpoint/functional behavior is partially preserved before measuring
+TRM hidden/process drift.
+
+### Next Run
+
+The next real run should be:
+
+```text
+Maze Path -> Policy Task-IL Replay Gate
+```
+
+Required additions:
+
+```text
+1. Train Task A path as before.
+2. Train Task B policy with old Task A endpoint replay.
+3. Keep explicit task IDs:
+   Task A path id = 0
+   Task B policy id = 1
+4. Evaluate:
+   Task A path exact, valid path rate, path F1
+   Task B policy reachable accuracy and rollout success
+5. Only after endpoint replay preserves old Task A enough, add TRM process
+   diagnostics and free-running flow preservation.
+```
+
+Recommended first replay setting:
+
+```text
+old replay memory: 128 path examples
+same quick-gate training budget first
+then a longer 24h run if the replay gate works
+```
+
+## 22. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
