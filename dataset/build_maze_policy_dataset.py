@@ -29,7 +29,6 @@ DIRS = (
     (0, 1, POLICY_RIGHT),
 )
 
-FIELDS = ("inputs", "puzzle_identifiers", "puzzle_indices", "group_indices")
 ROOT_METADATA_FILES = ("identifiers.json", "test_puzzles.json")
 
 
@@ -94,7 +93,13 @@ def _policy_labels(input_seq: np.ndarray) -> np.ndarray:
     return labels.reshape(-1)
 
 
-def convert_split(input_dir: Path, output_dir: Path, split: str) -> None:
+def _write_identifiers(output_dir: Path, num_puzzle_identifiers: int) -> None:
+    identifiers = ["<blank>"] + [f"task_{i}" for i in range(1, num_puzzle_identifiers)]
+    with open(output_dir / "identifiers.json", "w") as f:
+        json.dump(identifiers[:num_puzzle_identifiers], f)
+
+
+def convert_split(input_dir: Path, output_dir: Path, split: str, task_id: int, num_puzzle_identifiers: int) -> None:
     metadata = _load_metadata(input_dir, split)
     split_in = input_dir / split
     split_out = output_dir / split
@@ -104,22 +109,36 @@ def convert_split(input_dir: Path, output_dir: Path, split: str) -> None:
     for set_name in metadata.sets:
         inputs = np.load(split_in / f"{set_name}__inputs.npy")
         labels = np.stack([_policy_labels(example) for example in inputs], axis=0)
+        source_puzzle_identifiers = np.load(split_in / f"{set_name}__puzzle_identifiers.npy")
 
         np.save(split_out / f"{set_name}__inputs.npy", inputs)
         np.save(split_out / f"{set_name}__labels.npy", labels)
+        np.save(
+            split_out / f"{set_name}__puzzle_identifiers.npy",
+            np.full_like(source_puzzle_identifiers, task_id, dtype=np.int32),
+        )
 
-        for field in FIELDS[1:]:
+        for field in ("puzzle_indices", "group_indices"):
             shutil.copy2(split_in / f"{set_name}__{field}.npy", split_out / f"{set_name}__{field}.npy")
         total_examples += int(inputs.shape[0])
 
-    out_metadata = metadata.model_copy(update={"vocab_size": 6, "ignore_label_id": IGNORE})
+    out_metadata = metadata.model_copy(
+        update={
+            "vocab_size": 6,
+            "ignore_label_id": IGNORE,
+            "num_puzzle_identifiers": num_puzzle_identifiers,
+        }
+    )
     with open(split_out / "dataset.json", "w") as f:
         json.dump(out_metadata.model_dump(), f)
 
     print(f"Wrote {split} policy labels: {total_examples} examples")
 
 
-def build_policy_dataset(input_dir: Path, output_dir: Path, overwrite: bool) -> None:
+def build_policy_dataset(input_dir: Path, output_dir: Path, overwrite: bool, task_id: int, num_puzzle_identifiers: int) -> None:
+    if task_id < 0 or task_id >= num_puzzle_identifiers:
+        raise ValueError(f"task_id must be in [0, {num_puzzle_identifiers}), got {task_id}")
+
     if output_dir.exists():
         if not overwrite:
             raise FileExistsError(f"Output directory exists: {output_dir}")
@@ -130,13 +149,11 @@ def build_policy_dataset(input_dir: Path, output_dir: Path, overwrite: bool) -> 
         src = input_dir / filename
         if src.exists():
             shutil.copy2(src, output_dir / filename)
-    if not (output_dir / "identifiers.json").exists():
-        with open(output_dir / "identifiers.json", "w") as f:
-            json.dump(["<blank>"], f)
+    _write_identifiers(output_dir, num_puzzle_identifiers)
 
     for split in ("train", "test"):
         if (input_dir / split / "dataset.json").exists():
-            convert_split(input_dir, output_dir, split)
+            convert_split(input_dir, output_dir, split, task_id, num_puzzle_identifiers)
 
 
 def main() -> None:
@@ -144,9 +161,17 @@ def main() -> None:
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--task-id", type=int, default=0)
+    parser.add_argument("--num-puzzle-identifiers", type=int, default=1)
     args = parser.parse_args()
 
-    build_policy_dataset(Path(args.input_dir), Path(args.output_dir), args.overwrite)
+    build_policy_dataset(
+        Path(args.input_dir),
+        Path(args.output_dir),
+        args.overwrite,
+        args.task_id,
+        args.num_puzzle_identifiers,
+    )
 
 
 if __name__ == "__main__":

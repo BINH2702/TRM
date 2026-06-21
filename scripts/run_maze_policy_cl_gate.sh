@@ -30,10 +30,15 @@ export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/mnt/data/binhnt6/cache/triton}"
 python -m dataset.build_maze_policy_dataset \
   --input-dir "${SOURCE_MAZE_DATA}" \
   --output-dir "${POLICY_DATA}" \
-  --overwrite
+  --overwrite \
+  --task-id 1 \
+  --num-puzzle-identifiers 2
 
 export TASK_A_DATA="${SOURCE_MAZE_DATA}"
 export TASK_B_DATA="${POLICY_DATA}"
+export TASK_A_ID="${TASK_A_ID:-0}"
+export TASK_B_ID="${TASK_B_ID:-1}"
+export NUM_TASK_IDENTIFIERS="${NUM_TASK_IDENTIFIERS:-2}"
 export RUN_PREFIX="${RUN_ID}"
 export CL_DATA_DIR="${CL_DATA_DIR:-/mnt/data/binhnt6/trm_data/cl_two_task/${RUN_ID}}"
 export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/mnt/data/binhnt6/trm_runs/checkpoints/${RUN_ID}}"
@@ -46,5 +51,9 @@ export EPOCHS_JOINT="${EPOCHS_JOINT:-250}"
 export EVAL_INTERVAL="${EVAL_INTERVAL:-250}"
 export EMA="${EMA:-False}"
 export EXTRA_PRETRAIN_ARGS="${EXTRA_PRETRAIN_ARGS:-arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=4 arch.mlp_t=False lr_warmup_steps=0 lr_min_ratio=1.0}"
+export MAZE_FUNCTIONAL_EVAL="${MAZE_FUNCTIONAL_EVAL:-1}"
+export REPLAY_MEMORY="${REPLAY_MEMORY:-128}"
+export REPLAY_LAMBDA="${REPLAY_LAMBDA:-1.0}"
+export REPLAY_SEED="${REPLAY_SEED:-0}"
 
 bash scripts/run_two_dataset_cl_learnability_gate.sh

@@ -1935,7 +1935,165 @@ same quick-gate training budget first
 then a longer 24h run if the replay gate works
 ```
 
-## 22. Notes
+## 22. Maze Path -> Policy Replay Gate
+
+### Implementation
+
+Implemented the first endpoint-replay gate for the corrected TRM-native
+Path -> Policy Task-IL setup.
+
+Code changes:
+
+```text
+dataset/build_maze_policy_dataset.py
+  - added explicit task-id support for policy datasets
+  - policy task now uses puzzle/task id 1
+  - metadata can declare num_puzzle_identifiers = 2
+
+scripts/run_two_dataset_cl_learnability_gate.sh
+  - normalizes Task A to task id 0 and Task B to task id 1
+  - builds a joint Task A+B dataset with both task identifiers
+  - optionally builds task_b_replay from all Task B rows plus sampled old
+    Task A memory rows
+  - trains sequential_replay_m{memory} from the Task A checkpoint
+
+scripts/run_maze_policy_cl_gate.sh
+  - default replay setting: REPLAY_MEMORY=128, REPLAY_LAMBDA=1.0
+  - public Slurm job name: binh_job
+  - outputs under /mnt/data/binhnt6
+
+scripts/eval_cl_learnability_gate.py
+  - added optional replay-checkpoint evaluation
+  - keeps Maze path/policy functional evaluators enabled
+
+evaluators/maze.py
+  - added MazePathFunctional and MazePolicyFunctional
+```
+
+Replay construction:
+
+```text
+Task A path memory: 128 examples
+Task B policy rows: all Task B training examples
+Replay branch train set: all Task B rows + replayed Task A rows
+Replay lambda: 1.0
+Replay implementation: data-level oversampling, not a separate weighted loss
+```
+
+Important caveat:
+
+```text
+The current run still uses the shared TRM output head. It is a useful endpoint
+replay gate, but it is not yet the cleanest frozen-old-head Task-IL setup.
+```
+
+### Run
+
+Run id:
+
+```text
+binh_job_replay_m128_20260621_132805
+```
+
+Paths:
+
+```text
+data root:
+  /mnt/data/binhnt6/trm_data/cl_two_task/binh_job_replay_m128_20260621_132805
+
+checkpoint root:
+  /mnt/data/binhnt6/trm_runs/checkpoints/binh_job_replay_m128_20260621_132805
+
+result csv:
+  /mnt/data/binhnt6/trm_runs/results/binh_job_replay_m128_20260621_132805/learnability_gate_endpoint_matrix.csv
+```
+
+The run used the active 24h full-H100 allocation:
+
+```text
+Slurm job: 21301
+Job name: binh_job
+```
+
+The run completed successfully. The log contains harmless NFS temporary
+directory cleanup warnings, but training and evaluation completed and wrote the
+endpoint matrix.
+
+### Result
+
+| Checkpoint | Eval task | Token acc | Exact | Loss | Path valid | Path F1 | Policy reachable | Policy rollout |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `a_only` | Task A path | 0.965 | 0.029 | 0.108 | 0.188 | 0.859 | n/a | n/a |
+| `a_only` | Task B policy | 0.287 | 0.000 | 4.527 | n/a | n/a | 0.287 | 0.000 |
+| `b_only` | Task A path | 0.180 | 0.000 | 4.829 | 0.000 | 0.181 | n/a | n/a |
+| `b_only` | Task B policy | 0.922 | 0.046 | 0.308 | n/a | n/a | 0.922 | 0.582 |
+| `joint_ab` | Task A path | 0.965 | 0.074 | 0.100 | 0.247 | 0.859 | n/a | n/a |
+| `joint_ab` | Task B policy | 0.900 | 0.025 | 0.297 | n/a | n/a | 0.900 | 0.447 |
+| `sequential_b` | Task A path | 0.369 | 0.000 | 3.355 | 0.000 | 0.175 | n/a | n/a |
+| `sequential_b` | Task B policy | 0.961 | 0.036 | 0.162 | n/a | n/a | 0.961 | 0.726 |
+| `sequential_replay_m128` | Task A path | 0.961 | 0.029 | 0.126 | 0.285 | 0.847 | n/a | n/a |
+| `sequential_replay_m128` | Task B policy | 0.931 | 0.006 | 0.278 | n/a | n/a | 0.931 | 0.433 |
+
+### Interpretation
+
+The replay gate passes the immediate endpoint-preservation precondition better
+than the previous sequential run.
+
+Old Task A path behavior:
+
+```text
+a_only Task A path F1:                 0.859
+sequential_b Task A path F1:           0.175
+sequential_replay_m128 Task A path F1: 0.847
+```
+
+Old Task A valid-path behavior:
+
+```text
+a_only Task A valid path:                 0.188
+sequential_b Task A valid path:           0.000
+sequential_replay_m128 Task A valid path: 0.285
+```
+
+So endpoint replay restores old Task A path structure and even improves valid
+path rate relative to the A-only checkpoint in this draw.
+
+Task B remains partially learned, but replay creates a stability-plasticity
+tradeoff:
+
+```text
+sequential_b Task B rollout success:           0.726
+sequential_replay_m128 Task B rollout success: 0.433
+```
+
+Reading:
+
+```text
+The run establishes a usable TRM endpoint-replay baseline:
+old Task A path is preserved while Task B policy remains above zero.
+
+It is still not process forgetting yet, because we have not measured hidden
+TRM trajectory drift, extra-rollout behavior, or perturbed-carry recovery under
+matched old endpoints.
+```
+
+### Next Step
+
+The next TRM experiment should add process diagnostics on this replay setting,
+not FR-flow yet.
+
+Immediate diagnostic targets:
+
+```text
+1. Evaluate a_only and sequential_replay_m128 on Task A at K = 4, 8, 16, 32.
+2. Log z_H, z_L, logits, q_head, and residual curves if possible.
+3. Measure whether Task A path F1 / valid path at K=16 is preserved while
+   longer rollout, overthinking, or process drift worsens.
+4. If process damage appears under endpoint replay, then add teacher-output
+   multihorizon and free-running TRM-flow preservation.
+```
+
+## 23. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.

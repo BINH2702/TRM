@@ -10,6 +10,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pretrain import PretrainConfig, TrainState, create_dataloader, create_model, evaluate
+from evaluators.maze import MazePathFunctional, MazePolicyFunctional
 
 
 def latest_checkpoint(checkpoint_dir: Path) -> Path:
@@ -33,7 +34,7 @@ def load_base_config(config_path: Path) -> dict:
     return cfg
 
 
-def eval_one(base_config: dict, checkpoint: Path, data_path: Path, batch_size: int) -> dict:
+def eval_one(base_config: dict, checkpoint: Path, data_path: Path, batch_size: int, functional_kind: str | None) -> dict:
     cfg_raw = copy.deepcopy(base_config)
     cfg_raw["data_paths"] = [str(data_path)]
     cfg_raw["data_paths_test"] = []
@@ -54,10 +55,26 @@ def eval_one(base_config: dict, checkpoint: Path, data_path: Path, batch_size: i
     state = TrainState(model=model, optimizers=[], optimizer_lrs=[], carry=None, step=0, total_steps=0)
     model.eval()
 
-    metrics = evaluate(cfg, state, loader, metadata, [], rank=0, world_size=1, cpu_group=None)
+    evaluators = []
+    if functional_kind == "path":
+        evaluators.append(MazePathFunctional())
+    elif functional_kind == "policy":
+        evaluators.append(MazePolicyFunctional())
+    elif functional_kind is not None:
+        raise ValueError(f"Unsupported functional evaluator kind: {functional_kind}")
+
+    metrics = evaluate(cfg, state, loader, metadata, evaluators, rank=0, world_size=1, cpu_group=None)
     del model, state, loader
     torch.cuda.empty_cache()
-    return metrics["all"]
+
+    # pretrain.evaluate stores normal model metrics under the eval split name
+    # ("all" for these test loaders), but evaluator.result() metrics are
+    # merged at the top level. Preserve both in the row-level result.
+    split_metrics = dict(metrics.get("all", {}))
+    for metric_name, metric_value in metrics.items():
+        if metric_name != "all":
+            split_metrics[metric_name] = metric_value
+    return split_metrics
 
 
 def main() -> None:
@@ -66,10 +83,13 @@ def main() -> None:
     parser.add_argument("--b-only-checkpoint-dir", required=True)
     parser.add_argument("--joint-checkpoint-dir", required=True)
     parser.add_argument("--sequential-checkpoint-dir", required=True)
+    parser.add_argument("--replay-checkpoint-dir")
+    parser.add_argument("--replay-name", default="sequential_replay")
     parser.add_argument("--task-a-data", required=True)
     parser.add_argument("--task-b-data", required=True)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--output-csv", required=True)
+    parser.add_argument("--maze-functional", action="store_true")
     args = parser.parse_args()
 
     checkpoint_dirs = {
@@ -78,6 +98,8 @@ def main() -> None:
         "joint_ab": Path(args.joint_checkpoint_dir),
         "sequential_b": Path(args.sequential_checkpoint_dir),
     }
+    if args.replay_checkpoint_dir:
+        checkpoint_dirs[args.replay_name] = Path(args.replay_checkpoint_dir)
     checkpoints = {name: latest_checkpoint(path) for name, path in checkpoint_dirs.items()}
     base_config = load_base_config(checkpoint_dirs["a_only"] / "all_config.yaml")
 
@@ -87,7 +109,10 @@ def main() -> None:
             ("task_a_test", Path(args.task_a_data)),
             ("task_b_test", Path(args.task_b_data)),
         ):
-            metrics = eval_one(base_config, checkpoint, data_path, args.batch_size)
+            functional_kind = None
+            if args.maze_functional:
+                functional_kind = "path" if split_name == "task_a_test" else "policy"
+            metrics = eval_one(base_config, checkpoint, data_path, args.batch_size, functional_kind)
             row = {
                 "checkpoint": checkpoint_name,
                 "checkpoint_path": str(checkpoint),
@@ -98,6 +123,9 @@ def main() -> None:
                 "lm_loss": float(metrics.get("lm_loss", 0.0)),
                 "steps": float(metrics.get("steps", 0.0)),
             }
+            for metric_name, metric_value in metrics.items():
+                if metric_name not in row:
+                    row[metric_name] = float(metric_value)
             rows.append(row)
             print(
                 "RESULT",
@@ -112,7 +140,12 @@ def main() -> None:
     output_csv = Path(args.output_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with open(output_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        fieldnames = []
+        for row in rows:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
     print(f"Wrote learnability-gate endpoint matrix: {output_csv}")
