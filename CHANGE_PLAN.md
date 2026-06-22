@@ -2306,7 +2306,274 @@ is worse than in replay_m128
 If all replay settings are stable, the next pressure knob should be replay
 ratio / explicit weighted old loss rather than FR-flow.
 
-## 24. Notes
+## 24. Maze Path -> Policy Replay Boundary and Perturbed-Carry Stress
+
+### Goal
+
+The replay-m128 diagnostic in Section 23 preserved old Task A too well. The
+next decisive question was:
+
+```text
+Is there a replay-strength boundary where old Task A path behavior is preserved
+at the normal horizon, Task B policy is still learned, but the old TRM process
+or basin stability fails under stronger stress?
+```
+
+This run keeps the corrected Task-IL setup:
+
+```text
+Task A: 30x30 maze shortest-path output
+Task B: 30x30 maze next-hop policy output
+task ids: path = 0, policy = 1
+replay memory: 128 Task A examples
+```
+
+### Implementation
+
+Added a perturbed-carry evaluator:
+
+```text
+scripts/eval_maze_perturbed_carry.py
+```
+
+It evaluates Task A path recovery after perturbing the recursive carry:
+
+```text
+perturbed states: z_H and z_L
+perturb steps: 4 and 8
+sigma: 0, 0.01, 0.03, 0.10 times carry RMS
+recovery horizons: 16, 32, 64
+subsets: all examples and top-25% path-length hard examples
+```
+
+Added a boundary training wrapper:
+
+```text
+scripts/run_maze_policy_replay_boundary.sh
+```
+
+It reuses the existing `a_only` checkpoint from Section 22 and trains only the
+missing Task-B replay branches.
+
+Also fixed the data-level replay-lambda construction in:
+
+```text
+scripts/run_two_dataset_cl_learnability_gate.sh
+```
+
+Previous behavior:
+
+```text
+replay_rows = max(memory_size, round(lambda * task_b_rows))
+```
+
+This made small lambdas such as `0.03` and `0.1` still use at least 128 replay
+rows, so they were not truly weak replay settings.
+
+Updated behavior:
+
+```text
+replay_rows = max(1, round(lambda * task_b_rows))
+```
+
+This makes the current boundary run an actual replay-frequency sweep. It is
+still data-level oversampling rather than a clean explicit weighted loss.
+
+### Run
+
+The run used the active full-H100 allocation:
+
+```text
+Slurm job id: 21301
+Slurm name: binh_job
+time limit: 24:00:00
+node: worker-1
+```
+
+Boundary run id:
+
+```text
+binh_job_boundary_m128_20260621_153314
+```
+
+Training branches:
+
+```text
+lambda = 0.03
+lambda = 0.1
+lambda = 0.3
+```
+
+Existing branches reused for comparison:
+
+```text
+lambda = 0      -> sequential_b from Section 22
+lambda = 1.0    -> sequential_replay_m128 from Section 22
+a_only          -> Task A reference from Section 22
+```
+
+Output directories:
+
+```text
+/mnt/data/binhnt6/trm_runs/checkpoints/binh_job_boundary_m128_20260621_153314
+/mnt/data/binhnt6/trm_runs/results/binh_job_boundary_m128_20260621_153314
+```
+
+Diagnostics written:
+
+```text
+horizon_diag_boundary/horizon_summary.csv
+horizon_diag_boundary/output_drift_vs_reference.csv
+horizon_diag_boundary/trace_drift_boundary_task_a.csv
+perturbed_carry_v1/perturbed_carry_summary.csv
+```
+
+### Endpoint Boundary Result
+
+Task A path and Task B policy at the normal horizon K=16:
+
+| Method | Task A F1 | Task A valid path | Task B policy rollout | Endpoint gate |
+|---|---:|---:|---:|---|
+| `a_only` | 0.858 | 0.188 | 0.000 | no Task B |
+| `lambda=0` | 0.175 | 0.000 | 0.726 | old A forgotten |
+| `lambda=0.03` | 0.718 | 0.000 | 0.664 | old A validity too low |
+| `lambda=0.1` | 0.792 | 0.013 | 0.633 | old A validity too low |
+| `lambda=0.3` | 0.872 | 0.315 | 0.748 | pass |
+| `lambda=1.0` | 0.847 | 0.285 | 0.433 | Task B too weak |
+
+Pre-registered endpoint gate:
+
+```text
+Task A F1 >= 0.82
+Task A valid path >= 0.15
+Task B policy rollout >= 0.55
+```
+
+Only `lambda=0.3` passes all three conditions. This is the useful boundary
+setting:
+
+```text
+old Task A path behavior is preserved,
+Task B policy is learned,
+and the setting is less over-protected than lambda=1.0.
+```
+
+### Longer-Rollout Result
+
+For `lambda=0.3`:
+
+| Horizon | Task A F1 | Task A valid path | Task B policy rollout |
+|---:|---:|---:|---:|
+| 16 | 0.872 | 0.315 | 0.748 |
+| 32 | 0.871 | 0.308 | 0.753 |
+| 64 | 0.871 | 0.311 | 0.750 |
+
+Reading:
+
+```text
+The useful boundary setting does not overthink or collapse under K=64.
+Old Task A and new Task B remain stable across longer rollout.
+```
+
+### Perturbed-Carry Stress
+
+Perturbing at step 8 with sigma `0.10`:
+
+| Method | Horizon | Task A F1 | Task A valid path | Token acc |
+|---|---:|---:|---:|---:|
+| `a_only` | 16 | 0.859 | 0.186 | 0.965 |
+| `a_only` | 64 | 0.859 | 0.195 | 0.965 |
+| `lambda=0.3` | 16 | 0.872 | 0.306 | 0.966 |
+| `lambda=0.3` | 64 | 0.871 | 0.310 | 0.965 |
+| `lambda=1.0` | 16 | 0.847 | 0.285 | 0.961 |
+| `lambda=1.0` | 64 | 0.847 | 0.287 | 0.961 |
+
+Hard top-25% path-length subset, perturb step 8, sigma `0.10`:
+
+| Method | Horizon | Task A F1 | Task A valid path | Token acc |
+|---|---:|---:|---:|---:|
+| `a_only` | 16 | 0.871 | 0.133 | 0.967 |
+| `a_only` | 64 | 0.871 | 0.133 | 0.967 |
+| `lambda=0.3` | 16 | 0.883 | 0.236 | 0.968 |
+| `lambda=0.3` | 64 | 0.882 | 0.236 | 0.968 |
+| `lambda=1.0` | 16 | 0.863 | 0.246 | 0.964 |
+| `lambda=1.0` | 64 | 0.862 | 0.246 | 0.964 |
+
+Reading:
+
+```text
+Perturbed-carry recovery does not expose endpoint-preserved old-task damage.
+lambda=0.3 is at least as stable as a_only on the measured Task A path metrics.
+```
+
+### Trace Drift
+
+Task A hidden/logit trace drift versus `a_only`, all examples at K=16:
+
+| Method | z_H RMSE | z_L RMSE | delta-z_H RMSE | delta-z_L RMSE | logits RMSE | q_halt abs diff |
+|---|---:|---:|---:|---:|---:|---:|
+| `lambda=0` | 1.285 | 1.067 | 0.141 | 0.188 | 41.409 | 3.060 |
+| `lambda=0.03` | 0.713 | 1.147 | 0.037 | 0.066 | 16.774 | 1.895 |
+| `lambda=0.1` | 0.560 | 1.025 | 0.074 | 0.130 | 15.077 | 1.196 |
+| `lambda=0.3` | 0.500 | 0.921 | 0.049 | 0.080 | 15.060 | 1.527 |
+| `lambda=1.0` | 0.482 | 0.969 | 0.099 | 0.216 | 21.053 | 2.121 |
+
+Reading:
+
+```text
+The endpoint-preserving lambda=0.3 checkpoint still uses a different hidden,
+logit, and q-head trajectory than a_only. But this drift does not currently
+produce a functional stress failure under K64 or perturbed-carry recovery.
+```
+
+### Scientific Interpretation
+
+This run is a useful negative result for the current TRM Path -> Policy branch.
+
+Supported:
+
+```text
+1. The replay boundary exists.
+2. lambda=0.3 preserves old Task A path behavior and learns Task B policy.
+3. hidden/process drift is measurable even when old Task A endpoints are
+   preserved.
+```
+
+Not supported:
+
+```text
+The current TRM Path -> Policy boundary does not show endpoint-preserved
+functional process forgetting. Longer rollout and perturbed-carry stress are
+stable at the only endpoint-passing boundary setting.
+```
+
+Best current reading:
+
+```text
+TRM Path -> Policy is now a valid Task-IL interference and replay-recovery
+benchmark, but it is not yet a process-forgetting benchmark. Endpoint replay
+appears to genuinely preserve old Task A behavior under the tested stresses.
+```
+
+### Next Decision
+
+Do not add FR-flow to this exact setting yet. The current result does not
+provide a failure for FR-flow to rescue.
+
+Recommended next options:
+
+```text
+1. Close this TRM branch as an appendix/negative-control result for now.
+2. If continuing TRM, increase stress in one controlled way:
+   - stronger Task B pressure after lambda=0.3,
+   - smaller replay memory with explicit weighted replay loss,
+   - larger/harder Maze evaluation,
+   - or task-specific frozen heads to remove shared-head confounds.
+3. Keep the main paper evidence on the BF -> Dijkstra result, where
+   endpoint-matched hard old-task stress failure is already clear.
+```
+
+## 25. Notes
 
 - Keep entries short and factual.
 - Include commands used for verification when possible.
